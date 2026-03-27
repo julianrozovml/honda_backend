@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: ${STACK_NAME}:latest
+    container_name: ${STACK_NAME}-web
     restart: unless-stopped
     depends_on:
       db:
@@ -37,12 +39,26 @@ services:
       DB_WAIT_RETRIES: ${DB_WAIT_RETRIES:-60}
       DB_WAIT_DELAY: ${DB_WAIT_DELAY:-2}
     volumes:
-      - honda_motoverso_files:/opt/drupal/web/sites/default/files
+      - ${STACK_NAME}_files:/opt/drupal/web/sites/default/files
+    labels:
+      - "traefik.enable=true"
+
+      - "traefik.http.routers.${STACK_NAME}-web.rule=Host(`${DRUPAL_DOMAIN}`)"
+      - "traefik.http.routers.${STACK_NAME}-web.entrypoints=websecure"
+      - "traefik.http.routers.${STACK_NAME}-web.tls=true"
+      - "traefik.http.routers.${STACK_NAME}-web.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${STACK_NAME}-web.loadbalancer.server.port=80"
+
+      - "traefik.tcp.routers.${STACK_NAME}-ssh.rule=HostSNI(`*`)"
+      - "traefik.tcp.routers.${STACK_NAME}-ssh.entrypoints=ssh"
+      - "traefik.tcp.services.${STACK_NAME}-ssh.loadbalancer.server.port=2222"
     networks:
       - internal
+      - proxy
 
   db:
     image: mariadb:10.6
+    container_name: ${STACK_NAME}-db
     restart: unless-stopped
     env_file:
       - .env
@@ -54,7 +70,7 @@ services:
       MYSQL_CHARACTER_SET_SERVER: utf8mb4
       MYSQL_COLLATION_SERVER: utf8mb4_general_ci
     volumes:
-      - honda_motoverso_db:/var/lib/mysql
+      - ${STACK_NAME}_db:/var/lib/mysql
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
@@ -66,6 +82,7 @@ services:
 
   phpmyadmin:
     image: phpmyadmin:latest
+    container_name: ${STACK_NAME}-pma
     restart: unless-stopped
     depends_on:
       db:
@@ -78,16 +95,27 @@ services:
       PHP_UPLOAD_MAX_FILESIZE: 512M
       PHP_POST_MAX_SIZE: 512M
       UPLOAD_LIMIT: 536870912
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${STACK_NAME}-pma.rule=Host(`${PMA_DOMAIN}`)"
+      - "traefik.http.routers.${STACK_NAME}-pma.entrypoints=websecure"
+      - "traefik.http.routers.${STACK_NAME}-pma.tls=true"
+      - "traefik.http.routers.${STACK_NAME}-pma.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${STACK_NAME}-pma.loadbalancer.server.port=80"
     networks:
       - internal
+      - proxy
 
 volumes:
-  honda_motoverso_files:
-    name: honda_motoverso_files
-  honda_motoverso_db:
-    name: honda_motoverso_db
+  ${STACK_NAME}_files:
+    name: ${STACK_NAME}_files
+  ${STACK_NAME}_db:
+    name: ${STACK_NAME}_db
 
 networks:
   internal:
-    name: honda_motoverso_net
+    name: ${STACK_NAME}_internal
     driver: bridge
+  proxy:
+    external: true
+    name: dokploy-network
