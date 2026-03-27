@@ -23,14 +23,34 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 # ── SSH: solo por llave pública, sin contraseña ───────────────
 RUN mkdir -p /var/run/sshd /root/.ssh \
   && chmod 700 /root/.ssh \
-  && echo "Port 2222"                              >> /etc/ssh/sshd_config \
-  && echo "PermitRootLogin prohibit-password"      >> /etc/ssh/sshd_config \
-  && echo "PubkeyAuthentication yes"               >> /etc/ssh/sshd_config \
-  && echo "PasswordAuthentication no"              >> /etc/ssh/sshd_config \
+  && echo "Port 2222"                                    >> /etc/ssh/sshd_config \
+  && echo "PermitRootLogin prohibit-password"            >> /etc/ssh/sshd_config \
+  && echo "PubkeyAuthentication yes"                     >> /etc/ssh/sshd_config \
+  && echo "PasswordAuthentication no"                    >> /etc/ssh/sshd_config \
   && echo "AuthorizedKeysFile /root/.ssh/authorized_keys" >> /etc/ssh/sshd_config
 
 # ── Apache mod_rewrite ────────────────────────────────────────
 RUN a2enmod rewrite
+
+# ── Copiar código del repositorio ────────────────────────────
+# Dokploy clona el repo antes del build — COPY lo incluye en la imagen
+COPY . /opt/drupal/
+
+# ── Composer install en tiempo de BUILD ──────────────────────
+# Así las dependencias quedan en la imagen — rápido y confiable
+# El vendor/ del build se sobreescribe por el volumen persistente
+# solo en el primer arranque si el volumen ya existe
+RUN cd /opt/drupal && composer install \
+    --no-interaction \
+    --no-dev \
+    --optimize-autoloader \
+    --prefer-dist \
+    --no-progress \
+  && md5sum composer.lock > vendor/.stamp 2>/dev/null || \
+     md5sum composer.json > vendor/.stamp 2>/dev/null || true
+
+# ── Drush global ─────────────────────────────────────────────
+RUN ln -sf /opt/drupal/vendor/bin/drush /usr/local/bin/drush 2>/dev/null || true
 
 # 80   → Drupal / Apache
 # 2222 → SSH al contenedor

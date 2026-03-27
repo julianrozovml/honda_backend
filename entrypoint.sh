@@ -1,140 +1,125 @@
 #!/bin/bash
-set -e
+# Sin set -e — manejamos errores manualmente
 
-GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${YELLOW}  🚀 honda-motoverso arrancando...       ${NC}"
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 # ═══════════════════════════════════════════
-# 1. SSH — Inyectar llaves públicas desde env
+# 1. SSH — múltiples desarrolladores
 # ═══════════════════════════════════════════
-# Soporta múltiples desarrolladores.
-# En el .env de Dokploy definir SSH_PUBLIC_KEYS
-# con una llave por línea, usando \n como separador:
-#
-# SSH_PUBLIC_KEYS=ssh-ed25519 AAAA... dev1@mac\nssh-ed25519 BBBB... dev2@mac
-#
-# O como variable individual por desarrollador:
-# SSH_KEY_JULIAN=ssh-ed25519 AAAA... julian@mac
-# SSH_KEY_ANDRES=ssh-ed25519 BBBB... andres@mac
-# SSH_KEY_CARLOS=ssh-ed25519 CCCC... carlos@mac
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+> /root/.ssh/authorized_keys
 
-mkdir -p /root/.ssh
-chmod 700 /root/.ssh
-> /root/.ssh/authorized_keys  # limpiar antes de escribir
-
-KEY_COUNT=0
-
-# ── Método 1: SSH_PUBLIC_KEYS con \n como separador ──────────
-if [ -n "$SSH_PUBLIC_KEYS" ]; then
-  echo -e "$SSH_PUBLIC_KEYS" | while IFS= read -r KEY; do
-    KEY=$(echo "$KEY" | tr -d '\r' | xargs)
-    if [ -n "$KEY" ]; then
-      echo "$KEY" >> /root/.ssh/authorized_keys
-      KEY_COUNT=$((KEY_COUNT + 1))
-    fi
-  done
-fi
-
-# ── Método 2: SSH_KEY_NOMBRE por cada desarrollador ──────────
-# Lee todas las variables de entorno que empiecen con SSH_KEY_
+# Una variable por desarrollador: SSH_KEY_NOMBRE=<llave.pub>
 while IFS='=' read -r VAR_NAME VAR_VALUE; do
   if [[ "$VAR_NAME" == SSH_KEY_* ]] && [ -n "$VAR_VALUE" ]; then
-    DEV_NAME="${VAR_NAME#SSH_KEY_}"
     KEY=$(echo "$VAR_VALUE" | tr -d '\r' | xargs)
-    if [ -n "$KEY" ]; then
-      echo "$KEY" >> /root/.ssh/authorized_keys
-      KEY_COUNT=$((KEY_COUNT + 1))
-      echo -e "${GREEN}  ✅ Llave SSH: $DEV_NAME${NC}"
-    fi
+    [ -n "$KEY" ] && echo "$KEY" >> /root/.ssh/authorized_keys \
+      && echo -e "${GREEN}  ✅ SSH: ${VAR_NAME#SSH_KEY_}${NC}"
   fi
 done < <(env)
 
-# ── Método 3: SSH_PUBLIC_KEY (retrocompatibilidad) ────────────
-if [ -n "$SSH_PUBLIC_KEY" ]; then
-  KEY=$(echo "$SSH_PUBLIC_KEY" | tr -d '\r' | xargs)
-  if [ -n "$KEY" ] && ! grep -qF "$KEY" /root/.ssh/authorized_keys 2>/dev/null; then
-    echo "$KEY" >> /root/.ssh/authorized_keys
-    KEY_COUNT=$((KEY_COUNT + 1))
-  fi
-fi
+# Retrocompatibilidad
+[ -n "$SSH_PUBLIC_KEYS" ] && echo -e "$SSH_PUBLIC_KEYS" | tr -d '\r' >> /root/.ssh/authorized_keys
+[ -n "$SSH_PUBLIC_KEY" ]  && echo "$SSH_PUBLIC_KEY" | tr -d '\r' >> /root/.ssh/authorized_keys
 
 chmod 600 /root/.ssh/authorized_keys
+TOTAL=$(grep -c 'ssh-' /root/.ssh/authorized_keys 2>/dev/null || echo 0)
 
-if [ "$KEY_COUNT" -gt 0 ] || [ -s /root/.ssh/authorized_keys ]; then
-  TOTAL=$(grep -c 'ssh-' /root/.ssh/authorized_keys 2>/dev/null || echo 0)
-  echo -e "${GREEN}✅ SSH configurado — $TOTAL llave(s) registrada(s)${NC}"
+if [ "$TOTAL" -gt 0 ]; then
+  echo -e "${GREEN}✅ SSH — $TOTAL llave(s) configurada(s)${NC}"
+  /usr/sbin/sshd -p 2222 && echo -e "${GREEN}✅ SSH en puerto 2222${NC}"
 else
-  echo -e "${YELLOW}⚠️  No se encontraron llaves SSH — acceso deshabilitado${NC}"
-  echo -e "${YELLOW}   Agrega SSH_KEY_NOMBRE=<llave.pub> en el .env de Dokploy${NC}"
+  echo -e "${YELLOW}⚠️  Sin llaves SSH — agrega SSH_KEY_NOMBRE en Dokploy env vars${NC}"
 fi
 
-/usr/sbin/sshd -p 2222
-echo -e "${GREEN}✅ SSH en puerto 2222${NC}"
+# ═══════════════════════════════════════════
+# 2. VENDOR — verificar si composer.lock cambió
+#
+# El vendor/ viene de la imagen (build time).
+# El volumen honda_motoverso_vendor persiste entre deploys.
+#
+# Situaciones:
+# A) Primer deploy: vendor del build se copia al volumen → OK
+# B) Redeploy sin cambios en deps: volumen ya tiene vendor → skip
+# C) Redeploy con nuevas deps: composer.lock cambió → reinstalar
+# ═══════════════════════════════════════════
+cd /opt/drupal
+
+VENDOR_DIR="/opt/drupal/vendor"
+COMPOSER_LOCK="/opt/drupal/composer.lock"
+COMPOSER_JSON="/opt/drupal/composer.json"
+STAMP="$VENDOR_DIR/.stamp"
+
+if [ ! -f "$COMPOSER_JSON" ]; then
+  echo -e "${YELLOW}⚠️  Sin composer.json — omitiendo verificación${NC}"
+
+elif [ ! -d "$VENDOR_DIR" ] || [ ! -f "$VENDOR_DIR/autoload.php" ]; then
+  echo -e "${CYAN}ℹ️  vendor/ ausente — ejecutando composer install${NC}"
+  composer install --no-interaction --no-dev --optimize-autoloader --prefer-dist --no-progress
+  [ $? -eq 0 ] && { [ -f "$COMPOSER_LOCK" ] && md5sum "$COMPOSER_LOCK" > "$STAMP" || md5sum "$COMPOSER_JSON" > "$STAMP"; }
+
+elif [ -f "$STAMP" ]; then
+  # Comparar checksum
+  CURRENT=$( [ -f "$COMPOSER_LOCK" ] && md5sum "$COMPOSER_LOCK" || md5sum "$COMPOSER_JSON" | cut -d' ' -f1 )
+  SAVED=$(cut -d' ' -f1 "$STAMP" 2>/dev/null)
+
+  if [ "$CURRENT" != "$SAVED" ]; then
+    echo -e "${CYAN}ℹ️  Dependencias cambiaron — actualizando${NC}"
+    composer install --no-interaction --no-dev --optimize-autoloader --prefer-dist --no-progress
+    [ $? -eq 0 ] && { [ -f "$COMPOSER_LOCK" ] && md5sum "$COMPOSER_LOCK" > "$STAMP" || md5sum "$COMPOSER_JSON" > "$STAMP"; }
+  else
+    echo -e "${GREEN}✅ Dependencias al día${NC}"
+  fi
+else
+  echo -e "${GREEN}✅ vendor/ disponible${NC}"
+fi
+
+# Drush global
+[ -f "/opt/drupal/vendor/bin/drush" ] && \
+  ln -sf /opt/drupal/vendor/bin/drush /usr/local/bin/drush 2>/dev/null
 
 # ═══════════════════════════════════════════
-# 2. VOLÚMENES PERSISTENTES
-#    Estos directorios viven en volúmenes
-#    Docker nombrados → sobreviven reinicios
-#    y redeploys completos
+# 3. DIRECTORIOS PERSISTENTES (volúmenes Docker)
 # ═══════════════════════════════════════════
-
-# ── Files públicos (imágenes, uploads) ───
-# Volumen: honda_motoverso_files
 FILES_DIR="/opt/drupal/web/sites/default/files"
-mkdir -p "$FILES_DIR/translations"
-mkdir -p "$FILES_DIR/private"
-chown -R www-data:www-data "$FILES_DIR"
-chmod -R 775 "$FILES_DIR"
-echo -e "${GREEN}✅ Volumen files listo: $FILES_DIR${NC}"
+mkdir -p "$FILES_DIR/translations" "$FILES_DIR/private"
+chown -R www-data:www-data "$FILES_DIR" 2>/dev/null
+chmod -R 775 "$FILES_DIR" 2>/dev/null
+echo -e "${GREEN}✅ Files: $FILES_DIR${NC}"
 
-# ── Config sync (gestionado por Git, no volumen) ─
-CONFIG_DIR="/opt/drupal/config/sync"
-mkdir -p "$CONFIG_DIR"
-chmod -R 775 "$CONFIG_DIR"
-chown -R www-data:www-data "$CONFIG_DIR"
+mkdir -p "/opt/drupal/config/sync"
+chmod -R 775 "/opt/drupal/config/sync" 2>/dev/null
+chown -R www-data:www-data "/opt/drupal/config/sync" 2>/dev/null
 
 # ═══════════════════════════════════════════
-# 3. SETTINGS.PHP
-#    Generado desde variables de entorno
-#    del contenedor — sin credenciales en repo
+# 4. SETTINGS.LOCAL.PHP desde env vars
 # ═══════════════════════════════════════════
 SETTINGS="/opt/drupal/web/sites/default/settings.php"
 SETTINGS_LOCAL="/opt/drupal/web/sites/default/settings.local.php"
 
-# Copiar default.settings si settings no existe
-if [ ! -f "$SETTINGS" ]; then
-  if [ -f "/opt/drupal/web/sites/default/default.settings.php" ]; then
-    cp /opt/drupal/web/sites/default/default.settings.php "$SETTINGS"
-    chmod 664 "$SETTINGS"
-  fi
+chmod u+w /opt/drupal/web/sites/default 2>/dev/null
+
+if [ ! -f "$SETTINGS" ] && [ -f "/opt/drupal/web/sites/default/default.settings.php" ]; then
+  cp /opt/drupal/web/sites/default/default.settings.php "$SETTINGS"
+  chmod 664 "$SETTINGS"
 fi
 
-# Asegurar que settings.php incluye settings.local.php
 if [ -f "$SETTINGS" ] && ! grep -q "settings.local.php" "$SETTINGS"; then
-  cat >> "$SETTINGS" << 'SETTINGS_EOF'
-
-// Incluir configuración generada desde env vars
-if (file_exists($app_root . '/' . $site_path . '/settings.local.php')) {
-  include $app_root . '/' . $site_path . '/settings.local.php';
-}
-SETTINGS_EOF
+  chmod u+w "$SETTINGS"
+  printf '\nif (file_exists($app_root . "/" . $site_path . "/settings.local.php")) {\n  include $app_root . "/" . $site_path . "/settings.local.php";\n}\n' >> "$SETTINGS"
 fi
 
-# Generar settings.local.php desde env vars del contenedor
 cat > "$SETTINGS_LOCAL" << EOF
 <?php
-
 /**
  * honda-motoverso — settings.local.php
- * Auto-generado por entrypoint.sh desde variables de entorno.
- * NO versionar este archivo.
+ * Auto-generado por entrypoint.sh — NO versionar.
  */
-
-// ── Base de datos ─────────────────────────────────────────────
-// Volumen: honda_motoverso_db (MariaDB)
 \$databases['default']['default'] = [
   'driver'    => 'mysql',
   'database'  => '${DB_NAME:-drupal}',
@@ -148,59 +133,27 @@ cat > "$SETTINGS_LOCAL" << EOF
   'namespace' => 'Drupal\\\\mysql\\\\Driver\\\\Database\\\\mysql',
   'autoload'  => 'core/modules/mysql/src/Driver/Database/mysql/',
 ];
-
-// ── Seguridad ─────────────────────────────────────────────────
-\$settings['hash_salt'] = '${DRUPAL_HASH_SALT:-INSECURE_CHANGE_IN_PRODUCTION}';
-
-// ── Rutas persistentes (apuntan a volúmenes Docker) ──────────
-\$settings['file_public_path']  = 'sites/default/files';
-\$settings['file_private_path'] = 'sites/default/files/private';
+\$settings['hash_salt']             = '${DRUPAL_HASH_SALT:-INSECURE_CHANGE_IN_PRODUCTION}';
+\$settings['file_public_path']      = 'sites/default/files';
+\$settings['file_private_path']     = 'sites/default/files/private';
 \$settings['config_sync_directory'] = '../config/sync';
-
-// ── Host patterns ─────────────────────────────────────────────
 \$settings['trusted_host_patterns'] = ['.*'];
-
-// ── CORS para JSON:API ────────────────────────────────────────
 \$settings['cors.config'] = [
-  'enabled'             => TRUE,
-  'allowedHeaders'      => ['*'],
-  'allowedMethods'      => ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-  'allowedOrigins'      => array_filter(explode(',', '${CORS_ORIGINS:-http://localhost:3000}')),
-  'exposedHeaders'      => TRUE,
-  'maxAge'              => FALSE,
+  'enabled'        => TRUE,
+  'allowedHeaders' => ['*'],
+  'allowedMethods' => ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  'allowedOrigins' => array_filter(explode(',', '${CORS_ORIGINS:-http://localhost:3000}')),
+  'exposedHeaders' => TRUE,
+  'maxAge'         => FALSE,
   'supportsCredentials' => FALSE,
 ];
-
-// ── Reverse proxy Traefik ─────────────────────────────────────
 \$settings['reverse_proxy']           = TRUE;
 \$settings['reverse_proxy_addresses'] = ['127.0.0.1'];
-
-// ── Entorno ───────────────────────────────────────────────────
 define('APP_ENV', '${APP_ENV:-production}');
 EOF
 
 chmod 444 "$SETTINGS_LOCAL"
-echo -e "${GREEN}✅ settings.local.php generado desde env vars${NC}"
-
-# ═══════════════════════════════════════════
-# 4. COMPOSER INSTALL
-#    Solo si vendor no existe (primer boot
-#    o si se borró el volumen de vendor)
-# ═══════════════════════════════════════════
-if [ -f "/opt/drupal/composer.json" ] && [ ! -d "/opt/drupal/vendor" ]; then
-  echo -e "${YELLOW}📦 Ejecutando composer install...${NC}"
-  cd /opt/drupal && composer install \
-    --no-interaction \
-    --no-dev \
-    --optimize-autoloader \
-    --prefer-dist
-  echo -e "${GREEN}✅ Composer OK${NC}"
-fi
-
-# ── Drush disponible globalmente ──────────
-if [ -f "/opt/drupal/vendor/bin/drush" ] && [ ! -L "/usr/local/bin/drush" ]; then
-  ln -sf /opt/drupal/vendor/bin/drush /usr/local/bin/drush
-fi
+echo -e "${GREEN}✅ settings.local.php generado${NC}"
 
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${GREEN}  ✅ honda-motoverso listo               ${NC}"
