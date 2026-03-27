@@ -1,0 +1,35 @@
+# Secretos
+.env
+
+# Drupal — instalados por Composer
+/vendor/
+/web/core/
+/web/modules/contrib/
+/web/themes/contrib/
+/web/profiles/contrib/
+/web/libraries/
+
+# Generados por Drupal — viven en volumen Docker
+/web/sites/default/files/
+/web/sites/default/settings.local.php
+/web/sites/default/services.yml
+
+# Sí versionar
+!/web/modules/custom/
+!/web/themes/custom/
+!/web/sites/default/settings.php
+!/config/sync/
+!.env.example
+
+# Backups locales
+.backups/
+
+# Docker override local
+docker-compose.override.yml
+
+# IDE / OS
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.log

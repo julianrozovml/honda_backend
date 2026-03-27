@@ -1,0 +1,143 @@
+services:
+
+  # ═══════════════════════════════════════════════════════════
+  # DRUPAL — PHP 8.3 + Apache + SSH + Drush
+  # ═══════════════════════════════════════════════════════════
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: honda-motoverso:11
+    container_name: honda-motoverso-web
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # ── Base de datos ───────────────────────────────────────
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:-drupal}
+      DB_USER: ${DB_USER:-drupal}
+      DB_PASS: ${DB_PASS:-drupal}
+      # ── Drupal ─────────────────────────────────────────────
+      DRUPAL_HASH_SALT: ${DRUPAL_HASH_SALT}
+      APP_ENV: ${APP_ENV:-production}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      # ── SSH ─────────────────────────────────────────────────
+      # Pegar contenido de: cat ~/.ssh/id_ed25519.pub
+      # Soporta múltiples llaves separadas por \n
+      SSH_PUBLIC_KEY: ${SSH_PUBLIC_KEY}
+    volumes:
+      # ── CÓDIGO (del repositorio Git) ─────────────────────
+      # Se actualiza en cada redeploy — es efímero
+      - .:/opt/drupal:delegated
+
+      # ── VOLUMEN PERSISTENTE: Files ────────────────────────
+      # Imágenes, uploads, archivos generados por Drupal
+      # Sobrevive a: reinicios, redeploys, recreaciones del contenedor
+      # Solo se pierde si: docker volume rm honda_motoverso_files
+      - honda_motoverso_files:/opt/drupal/web/sites/default/files
+
+      # ── VOLUMEN PERSISTENTE: Vendor ───────────────────────
+      # Dependencias de Composer
+      # Evita reinstalar en cada reinicio
+      - honda_motoverso_vendor:/opt/drupal/vendor
+
+    labels:
+      # ── Traefik: HTTP → Drupal ────────────────────────────
+      - "traefik.enable=true"
+      - "traefik.http.routers.honda-motoverso.rule=Host(`${DRUPAL_DOMAIN:-localhost}`)"
+      - "traefik.http.routers.honda-motoverso.entrypoints=websecure"
+      - "traefik.http.routers.honda-motoverso.tls=true"
+      - "traefik.http.routers.honda-motoverso.tls.certresolver=letsencrypt"
+      - "traefik.http.services.honda-motoverso.loadbalancer.server.port=80"
+      # ── Traefik: TCP → SSH (puerto 2222) ──────────────────
+      - "traefik.tcp.routers.honda-motoverso-ssh.rule=HostSNI(`*`)"
+      - "traefik.tcp.routers.honda-motoverso-ssh.entrypoints=ssh"
+      - "traefik.tcp.services.honda-motoverso-ssh.loadbalancer.server.port=2222"
+    networks:
+      - honda_motoverso_net
+
+  # ═══════════════════════════════════════════════════════════
+  # MARIADB 10.6
+  # ═══════════════════════════════════════════════════════════
+  db:
+    image: mariadb:10.6
+    container_name: honda-motoverso-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS:-root}
+      MYSQL_DATABASE: ${DB_NAME:-drupal}
+      MYSQL_USER: ${DB_USER:-drupal}
+      MYSQL_PASSWORD: ${DB_PASS:-drupal}
+      # ── Optimización para Drupal ─────────────────────────
+      MYSQL_CHARACTER_SET_SERVER: utf8mb4
+      MYSQL_COLLATION_SERVER: utf8mb4_general_ci
+    volumes:
+      # ── VOLUMEN PERSISTENTE: Base de datos ────────────────
+      # Toda la BD vive aquí — NUNCA en el contenedor
+      # Sobrevive a: reinicios, redeploys, recreaciones
+      # Solo se pierde si: docker volume rm honda_motoverso_db
+      - honda_motoverso_db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - honda_motoverso_net
+
+  # ═══════════════════════════════════════════════════════════
+  # PHPMYADMIN — Gestión visual de BD
+  # ═══════════════════════════════════════════════════════════
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: honda-motoverso-pma
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      PMA_HOST: db
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS:-root}
+      PHP_UPLOAD_MAX_FILESIZE: 512M
+      PHP_POST_MAX_SIZE: 512M
+      UPLOAD_LIMIT: 536870912
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.honda-motoverso-pma.rule=Host(`${PMA_DOMAIN:-pma.localhost}`)"
+      - "traefik.http.routers.honda-motoverso-pma.entrypoints=websecure"
+      - "traefik.http.routers.honda-motoverso-pma.tls=true"
+      - "traefik.http.routers.honda-motoverso-pma.tls.certresolver=letsencrypt"
+      - "traefik.http.services.honda-motoverso-pma.loadbalancer.server.port=80"
+    networks:
+      - honda_motoverso_net
+
+# ═══════════════════════════════════════════════════════════════
+# VOLÚMENES NOMBRADOS
+# Estos volúmenes viven en el disco del VPS de Dokploy
+# Son completamente independientes del ciclo de vida
+# de los contenedores
+# ═══════════════════════════════════════════════════════════════
+volumes:
+
+  # Files de Drupal (imágenes, uploads, archivos generados)
+  # Ruta en el VPS: /var/lib/docker/volumes/honda_motoverso_files/_data
+  honda_motoverso_files:
+    name: honda_motoverso_files
+
+  # Base de datos MariaDB
+  # Ruta en el VPS: /var/lib/docker/volumes/honda_motoverso_db/_data
+  honda_motoverso_db:
+    name: honda_motoverso_db
+
+  # Vendor de Composer (acelera reinicios)
+  # Ruta en el VPS: /var/lib/docker/volumes/honda_motoverso_vendor/_data
+  honda_motoverso_vendor:
+    name: honda_motoverso_vendor
+
+networks:
+  honda_motoverso_net:
+    name: honda_motoverso_net
+    driver: bridge
