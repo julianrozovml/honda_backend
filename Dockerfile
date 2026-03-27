@@ -53,30 +53,32 @@ RUN printf '[client]\nssl-mode=DISABLED\nprotocol=TCP\n' > /root/.my.cnf \
 # ── Copiar proyecto ───────────────────────────────────────────
 COPY . /opt/drupal/
 
+
 # ── Dependencias Composer ─────────────────────────────────────
-# Usa composer install con el composer.lock del repo para garantizar
-# versiones reproducibles en todos los entornos.
-# Si no hay composer.lock (primer setup), usa composer update.
-RUN if [ -f /opt/drupal/composer.lock ]; then \
-      composer install \
-        --working-dir=/opt/drupal \
-        --no-interaction \
-        --no-dev \
-        --optimize-autoloader \
-        --prefer-dist \
-        --no-progress; \
-    else \
-      echo "⚠️  Sin composer.lock — usando composer update (solo primera vez)" \
-      && composer update \
-        --working-dir=/opt/drupal \
-        --no-interaction \
-        --no-dev \
-        --optimize-autoloader \
-        --prefer-dist \
-        --no-progress; \
-    fi \
+# Intenta composer install.
+# Si falla (lock desactualizado o incompatible) → limpia lock + vendor
+# y vuelve a intentar composer install para generar lock fresco.
+RUN cd /opt/drupal \
+  && composer install \
+      --no-interaction \
+      --no-dev \
+      --optimize-autoloader \
+      --prefer-dist \
+      --no-progress \
+  || ( \
+      echo "⚠️  composer install falló — limpiando lock y vendor..." \
+      && rm -f composer.lock \
+      && rm -rf vendor \
+      && composer install \
+          --no-interaction \
+          --no-dev \
+          --optimize-autoloader \
+          --prefer-dist \
+          --no-progress \
+  ) \
   && ln -sf /opt/drupal/vendor/bin/drush /usr/local/bin/drush \
   && chown -R www-data:www-data /opt/drupal
+
 
 EXPOSE 80 2222
 
