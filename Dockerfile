@@ -46,9 +46,10 @@ RUN mkdir -p /var/run/sshd /root/.ssh \
 # ── Cliente MySQL sin SSL (red interna Docker) ────────────────
 # Drush usa el cliente mariadb para sqlc, sql-dump, etc.
 # Sin esta config exige SSL que MariaDB en Docker no tiene por defecto.
-RUN printf '[client]\nssl-mode=DISABLED\nprotocol=TCP\n' > /root/.my.cnf \
+RUN printf '[client]\nssl=0\nprotocol=TCP\n[mysql]\nssl=0\n[mysqldump]\nssl=0\n[mariadb]\nssl=0\n' > /root/.my.cnf \
   && chmod 600 /root/.my.cnf \
-  && printf '[client]\nssl-mode=DISABLED\nprotocol=TCP\n' > /etc/mysql/conf.d/no-ssl.cnf
+  && mkdir -p /etc/mysql/conf.d \
+  && cp /root/.my.cnf /etc/mysql/conf.d/no-ssl.cnf
 
 # ── Copiar proyecto ───────────────────────────────────────────
 COPY . /opt/drupal/

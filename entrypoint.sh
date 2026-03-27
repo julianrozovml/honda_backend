@@ -42,16 +42,32 @@ echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━�
 # ═══════════════════════════════════════════
 # 0. Cliente MariaDB sin SSL para red interna
 # ═══════════════════════════════════════════
-# Fix SSL para root (drush, mysql directo)
-printf '[client]\nssl-mode=DISABLED\nprotocol=TCP\n' > /root/.my.cnf
+# Fix SSL para cliente MySQL/MariaDB en red interna Docker
+# Sin esto drush sqlc / sql-dump fallan con ERROR 2026 TLS/SSL
+cat > /root/.my.cnf << 'MYCNF'
+[client]
+ssl=0
+protocol=TCP
+[mysql]
+ssl=0
+[mysqldump]
+ssl=0
+[mariadb]
+ssl=0
+[mariadump]
+ssl=0
+MYCNF
 chmod 600 /root/.my.cnf
 
-# Fix SSL para www-data (por si apache ejecuta comandos DB)
+# También para www-data
 mkdir -p /var/www
-printf '[client]\nssl-mode=DISABLED\nprotocol=TCP\n' > /var/www/.my.cnf
+cp /root/.my.cnf /var/www/.my.cnf
 chmod 644 /var/www/.my.cnf
 
-echo -e "${GREEN}✅ Cliente MariaDB configurado sin SSL para red interna${NC}"
+# También en /etc para que aplique a todos los usuarios
+cp /root/.my.cnf /etc/mysql/conf.d/no-ssl.cnf 2>/dev/null || true
+
+echo -e "${GREEN}✅ Cliente MariaDB configurado sin SSL${NC}"
 
 # ═══════════════════════════════════════════
 # 1. Preparar filesystem Drupal
@@ -129,6 +145,9 @@ cat > "${SETTINGS_LOCAL}" <<EOF
   'collation' => 'utf8mb4_general_ci',
   'namespace' => 'Drupal\\\\mysql\\\\Driver\\\\Database\\\\mysql',
   'autoload' => 'core/modules/mysql/src/Driver/Database/mysql/',
+  'pdo' => [
+    \PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => FALSE,
+  ],
 ];
 
 \$settings['hash_salt'] = '${DRUPAL_HASH_SALT}';
