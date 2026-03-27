@@ -39,16 +39,14 @@ services:
       DB_WAIT_RETRIES: ${DB_WAIT_RETRIES:-60}
       DB_WAIT_DELAY: ${DB_WAIT_DELAY:-2}
     volumes:
-      - ${STACK_NAME}_files:/opt/drupal/web/sites/default/files
+      - files:/opt/drupal/web/sites/default/files
     labels:
       - "traefik.enable=true"
-
       - "traefik.http.routers.${STACK_NAME}-web.rule=Host(`${DRUPAL_DOMAIN}`)"
       - "traefik.http.routers.${STACK_NAME}-web.entrypoints=websecure"
       - "traefik.http.routers.${STACK_NAME}-web.tls=true"
       - "traefik.http.routers.${STACK_NAME}-web.tls.certresolver=letsencrypt"
       - "traefik.http.services.${STACK_NAME}-web.loadbalancer.server.port=80"
-
       - "traefik.tcp.routers.${STACK_NAME}-ssh.rule=HostSNI(`*`)"
       - "traefik.tcp.routers.${STACK_NAME}-ssh.entrypoints=ssh"
       - "traefik.tcp.services.${STACK_NAME}-ssh.loadbalancer.server.port=2222"
@@ -70,7 +68,7 @@ services:
       MYSQL_CHARACTER_SET_SERVER: utf8mb4
       MYSQL_COLLATION_SERVER: utf8mb4_general_ci
     volumes:
-      - ${STACK_NAME}_db:/var/lib/mysql
+      - db:/var/lib/mysql
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
@@ -107,9 +105,9 @@ services:
       - proxy
 
 volumes:
-  ${STACK_NAME}_files:
+  files:
     name: ${STACK_NAME}_files
-  ${STACK_NAME}_db:
+  db:
     name: ${STACK_NAME}_db
 
 networks:
