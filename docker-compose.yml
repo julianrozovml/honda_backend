@@ -37,7 +37,7 @@ services:
       DB_WAIT_RETRIES: ${DB_WAIT_RETRIES:-60}
       DB_WAIT_DELAY: ${DB_WAIT_DELAY:-2}
     volumes:
-      - drupal_files:/opt/drupal/web/sites/default/files
+      - honda_motoverso_files:/opt/drupal/web/sites/default/files
     networks:
       - internal
 
@@ -54,7 +54,7 @@ services:
       MYSQL_CHARACTER_SET_SERVER: utf8mb4
       MYSQL_COLLATION_SERVER: utf8mb4_general_ci
     volumes:
-      - drupal_db:/var/lib/mysql
+      - honda_motoverso_db:/var/lib/mysql
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
@@ -82,9 +82,12 @@ services:
       - internal
 
 volumes:
-  drupal_files:
-  drupal_db:
+  honda_motoverso_files:
+    name: honda_motoverso_files
+  honda_motoverso_db:
+    name: honda_motoverso_db
 
 networks:
   internal:
+    name: honda_motoverso_net
     driver: bridge

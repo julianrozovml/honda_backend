@@ -42,21 +42,39 @@ RUN mkdir -p /var/run/sshd /root/.ssh \
   && echo "PasswordAuthentication no" >> /etc/ssh/sshd_config \
   && echo "AuthorizedKeysFile /root/.ssh/authorized_keys" >> /etc/ssh/sshd_config
 
+
+# ── Cliente MySQL sin SSL (red interna Docker) ────────────────
+# Drush usa el cliente mariadb para sqlc, sql-dump, etc.
+# Sin esta config exige SSL que MariaDB en Docker no tiene por defecto.
+RUN printf '[client]\nssl-mode=DISABLED\nprotocol=TCP\n' > /root/.my.cnf \
+  && chmod 600 /root/.my.cnf \
+  && printf '[client]\nssl-mode=DISABLED\nprotocol=TCP\n' > /etc/mysql/conf.d/no-ssl.cnf
+
 # ── Copiar proyecto ───────────────────────────────────────────
 COPY . /opt/drupal/
 
-# ── Dependencias Composer
-# Primera instalación:
-# La imagen base puede traer un composer.lock heredado que no coincide
-# con tu proyecto. Lo eliminamos y resolvemos desde composer.json.
-RUN rm -f /opt/drupal/composer.lock \
-  && composer update \
-  --working-dir=/opt/drupal \
-  --no-interaction \
-  --no-dev \
-  --optimize-autoloader \
-  --prefer-dist \
-  --no-progress \
+# ── Dependencias Composer ─────────────────────────────────────
+# Usa composer install con el composer.lock del repo para garantizar
+# versiones reproducibles en todos los entornos.
+# Si no hay composer.lock (primer setup), usa composer update.
+RUN if [ -f /opt/drupal/composer.lock ]; then \
+      composer install \
+        --working-dir=/opt/drupal \
+        --no-interaction \
+        --no-dev \
+        --optimize-autoloader \
+        --prefer-dist \
+        --no-progress; \
+    else \
+      echo "⚠️  Sin composer.lock — usando composer update (solo primera vez)" \
+      && composer update \
+        --working-dir=/opt/drupal \
+        --no-interaction \
+        --no-dev \
+        --optimize-autoloader \
+        --prefer-dist \
+        --no-progress; \
+    fi \
   && ln -sf /opt/drupal/vendor/bin/drush /usr/local/bin/drush \
   && chown -R www-data:www-data /opt/drupal
 
