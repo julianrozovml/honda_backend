@@ -1,103 +1,149 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
+#!/bin/bash
+set -e
 
-GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
 
-log() { echo -e "$1$2${NC}"; }
-info() { log "$CYAN" "$1"; }
-ok() { log "$GREEN" "$1"; }
-warn() { log "$YELLOW" "$1"; }
-fail() { log "$RED" "$1"; exit 1; }
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${YELLOW}  🚀 honda-motoverso arrancando...     ${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-APP_ROOT="/opt/drupal"
-WEB_ROOT="$APP_ROOT/web"
-SITE_DEFAULT="$WEB_ROOT/sites/default"
-FILES_DIR="$SITE_DEFAULT/files"
-SETTINGS="$SITE_DEFAULT/settings.php"
-SETTINGS_LOCAL="$SITE_DEFAULT/settings.local.php"
-CONFIG_DIR="$APP_ROOT/config/sync"
-AUTHORIZED_KEYS="/root/.ssh/authorized_keys"
+# ═══════════════════════════════════════════
+# 0. Cliente MariaDB/MySQL sin SSL
+#    Necesario para drush sqlc y conexiones
+#    internas Docker cuando la BD no expone TLS
+# ═══════════════════════════════════════════
+cat > /root/.my.cnf << EOF
+[client]
+ssl-mode=DISABLED
+EOF
 
-DB_HOST="${DB_HOST:-db}"
-DB_PORT="${DB_PORT:-3306}"
-DB_NAME="${DB_NAME:-drupal}"
-DB_USER="${DB_USER:-drupal}"
-DB_PASS="${DB_PASS:-drupal}"
-APP_ENV="${APP_ENV:-production}"
+chmod 600 /root/.my.cnf
 
+echo -e "${GREEN}✅ Cliente MariaDB configurado sin SSL para red interna${NC}"
+
+# ═══════════════════════════════════════════
+# 1. SSH — Inyectar llaves públicas desde env
+# ═══════════════════════════════════════════
 mkdir -p /root/.ssh
 chmod 700 /root/.ssh
-: > "$AUTHORIZED_KEYS"
+> /root/.ssh/authorized_keys
 
-load_ssh_keys() {
-  local key
+KEY_COUNT=0
 
-  if [[ -n "${SSH_PUBLIC_KEYS:-}" ]]; then
-    while IFS= read -r key; do
-      key="$(echo "$key" | tr -d '\r' | xargs || true)"
-      [[ -n "$key" ]] && echo "$key" >> "$AUTHORIZED_KEYS"
-    done < <(printf '%b\n' "$SSH_PUBLIC_KEYS")
-  fi
-
-  while IFS='=' read -r var_name var_value; do
-    if [[ "$var_name" == SSH_KEY_* ]] && [[ -n "$var_value" ]]; then
-      key="$(echo "$var_value" | tr -d '\r' | xargs || true)"
-      if [[ -n "$key" ]] && ! grep -qF "$key" "$AUTHORIZED_KEYS" 2>/dev/null; then
-        echo "$key" >> "$AUTHORIZED_KEYS"
-        ok "✅ SSH: ${var_name#SSH_KEY_}"
-      fi
+# Método 1: SSH_PUBLIC_KEYS con \n como separador
+if [ -n "$SSH_PUBLIC_KEYS" ]; then
+  while IFS= read -r KEY; do
+    KEY=$(echo "$KEY" | tr -d '\r' | xargs)
+    if [ -n "$KEY" ]; then
+      echo "$KEY" >> /root/.ssh/authorized_keys
+      KEY_COUNT=$((KEY_COUNT + 1))
     fi
-  done < <(env)
+  done < <(printf '%b\n' "$SSH_PUBLIC_KEYS")
+fi
 
-  if [[ -n "${SSH_PUBLIC_KEY:-}" ]]; then
-    key="$(echo "$SSH_PUBLIC_KEY" | tr -d '\r' | xargs || true)"
-    [[ -n "$key" ]] && ! grep -qF "$key" "$AUTHORIZED_KEYS" 2>/dev/null && echo "$key" >> "$AUTHORIZED_KEYS"
+# Método 2: todas las variables que empiecen por SSH_KEY_
+while IFS='=' read -r VAR_NAME VAR_VALUE; do
+  if [[ "$VAR_NAME" == SSH_KEY_* ]] && [ -n "$VAR_VALUE" ]; then
+    DEV_NAME="${VAR_NAME#SSH_KEY_}"
+    KEY=$(echo "$VAR_VALUE" | tr -d '\r' | xargs)
+    if [ -n "$KEY" ] && ! grep -qF "$KEY" /root/.ssh/authorized_keys 2>/dev/null; then
+      echo "$KEY" >> /root/.ssh/authorized_keys
+      KEY_COUNT=$((KEY_COUNT + 1))
+      echo -e "${GREEN}✅ Llave SSH cargada: $DEV_NAME${NC}"
+    fi
+  fi
+done < <(env)
+
+# Método 3: compatibilidad hacia atrás
+if [ -n "$SSH_PUBLIC_KEY" ]; then
+  KEY=$(echo "$SSH_PUBLIC_KEY" | tr -d '\r' | xargs)
+  if [ -n "$KEY" ] && ! grep -qF "$KEY" /root/.ssh/authorized_keys 2>/dev/null; then
+    echo "$KEY" >> /root/.ssh/authorized_keys
+    KEY_COUNT=$((KEY_COUNT + 1))
+  fi
+fi
+
+chmod 600 /root/.ssh/authorized_keys
+
+if [ -s /root/.ssh/authorized_keys ]; then
+  TOTAL=$(grep -c 'ssh-' /root/.ssh/authorized_keys 2>/dev/null || echo 0)
+  echo -e "${GREEN}✅ SSH configurado — $TOTAL llave(s) registrada(s)${NC}"
+  /usr/sbin/sshd -p 2222
+  echo -e "${GREEN}✅ SSH escuchando en 2222${NC}"
+else
+  echo -e "${YELLOW}⚠️ No se encontraron llaves SSH; acceso SSH deshabilitado${NC}"
+fi
+
+# ═══════════════════════════════════════════
+# 2. Esperar base de datos
+# ═══════════════════════════════════════════
+DB_HOST="${DB_HOST:-db}"
+DB_PORT="${DB_PORT:-3306}"
+DB_USER="${DB_USER:-drupal}"
+DB_PASS="${DB_PASS:-drupal}"
+DB_NAME="${DB_NAME:-drupal}"
+DB_WAIT_RETRIES="${DB_WAIT_RETRIES:-60}"
+DB_WAIT_DELAY="${DB_WAIT_DELAY:-2}"
+
+echo -e "${YELLOW}⏳ Esperando base de datos en ${DB_HOST}:${DB_PORT}...${NC}"
+
+for ((i=1; i<=DB_WAIT_RETRIES; i++)); do
+  if mariadb-admin ping -h"${DB_HOST}" -P"${DB_PORT}" -u"${DB_USER}" -p"${DB_PASS}" --silent >/dev/null 2>&1; then
+    echo -e "${GREEN}✅ Base de datos disponible${NC}"
+    break
   fi
 
-  chmod 600 "$AUTHORIZED_KEYS"
-
-  if [[ -s "$AUTHORIZED_KEYS" ]]; then
-    local total
-    total="$(grep -c 'ssh-' "$AUTHORIZED_KEYS" 2>/dev/null || echo 0)"
-    ok "✅ SSH — $total llave(s) configurada(s)"
-    /usr/sbin/sshd -p 2222
-    ok "✅ SSH en puerto 2222"
-  else
-    warn "⚠️  Sin llaves SSH — acceso SSH deshabilitado"
-  fi
-}
-
-prepare_directories() {
-  mkdir -p "$FILES_DIR/translations" "$FILES_DIR/private" "$CONFIG_DIR"
-  chown -R www-data:www-data "$FILES_DIR" "$CONFIG_DIR" || true
-  chmod -R 775 "$FILES_DIR" "$CONFIG_DIR" || true
-  ok "✅ Directorios persistentes listos"
-}
-
-ensure_settings() {
-  chmod u+w "$SITE_DEFAULT" || true
-
-  if [[ ! -f "$SETTINGS" ]] && [[ -f "$SITE_DEFAULT/default.settings.php" ]]; then
-    cp "$SITE_DEFAULT/default.settings.php" "$SETTINGS"
-    chmod 664 "$SETTINGS"
+  if [ "$i" -eq "$DB_WAIT_RETRIES" ]; then
+    echo -e "${RED}❌ No fue posible conectar a la base de datos${NC}"
+    exit 1
   fi
 
-  if [[ -f "$SETTINGS" ]] && ! grep -q "settings.local.php" "$SETTINGS"; then
-    chmod u+w "$SETTINGS" || true
-    cat >> "$SETTINGS" <<'SETTINGS_INCLUDE'
+  sleep "${DB_WAIT_DELAY}"
+done
 
+# ═══════════════════════════════════════════
+# 3. Directorios persistentes
+# ═══════════════════════════════════════════
+FILES_DIR="/opt/drupal/web/sites/default/files"
+mkdir -p "$FILES_DIR/translations"
+mkdir -p "$FILES_DIR/private"
+chown -R www-data:www-data "$FILES_DIR"
+chmod -R 775 "$FILES_DIR"
+echo -e "${GREEN}✅ Files listo: $FILES_DIR${NC}"
+
+CONFIG_DIR="/opt/drupal/config/sync"
+mkdir -p "$CONFIG_DIR"
+chown -R www-data:www-data "$CONFIG_DIR"
+chmod -R 775 "$CONFIG_DIR"
+echo -e "${GREEN}✅ Config sync listo: $CONFIG_DIR${NC}"
+
+# ═══════════════════════════════════════════
+# 4. settings.php y settings.local.php
+# ═══════════════════════════════════════════
+SETTINGS="/opt/drupal/web/sites/default/settings.php"
+DEFAULT_SETTINGS="/opt/drupal/web/sites/default/default.settings.php"
+SETTINGS_LOCAL="/opt/drupal/web/sites/default/settings.local.php"
+
+if [ ! -f "$SETTINGS" ] && [ -f "$DEFAULT_SETTINGS" ]; then
+  cp "$DEFAULT_SETTINGS" "$SETTINGS"
+  chmod 664 "$SETTINGS"
+fi
+
+if [ -f "$SETTINGS" ] && ! grep -q "settings.local.php" "$SETTINGS"; then
+  cat >> "$SETTINGS" << 'SETTINGS_EOF'
+
+// Incluir configuración generada desde variables de entorno.
 if (file_exists($app_root . '/' . $site_path . '/settings.local.php')) {
   include $app_root . '/' . $site_path . '/settings.local.php';
 }
-SETTINGS_INCLUDE
-  fi
+SETTINGS_EOF
+fi
 
-  cat > "$SETTINGS_LOCAL" <<EOF_LOCAL
+cat > "$SETTINGS_LOCAL" << EOF
 <?php
-/**
- * Auto-generado por entrypoint.sh.
- * No versionar este archivo.
- */
 
 \$databases['default']['default'] = [
   'driver' => 'mysql',
@@ -109,11 +155,12 @@ SETTINGS_INCLUDE
   'prefix' => '',
   'charset' => 'utf8mb4',
   'collation' => 'utf8mb4_general_ci',
-  'namespace' => 'Drupal\\mysql\\Driver\\Database\\mysql',
+  'namespace' => 'Drupal\\\\mysql\\\\Driver\\\\Database\\\\mysql',
   'autoload' => 'core/modules/mysql/src/Driver/Database/mysql/',
 ];
 
-\$settings['hash_salt'] = '${DRUPAL_HASH_SALT:-CHANGE_ME_IN_PRODUCTION}';
+\$settings['hash_salt'] = '${DRUPAL_HASH_SALT:-CHANGE_ME_HASH_SALT}';
+
 \$settings['file_public_path'] = 'sites/default/files';
 \$settings['file_private_path'] = 'sites/default/files/private';
 \$settings['config_sync_directory'] = '../config/sync';
@@ -124,99 +171,81 @@ SETTINGS_INCLUDE
   'enabled' => TRUE,
   'allowedHeaders' => ['*'],
   'allowedMethods' => ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-  'allowedOrigins' => array_values(array_filter(array_map('trim', explode(',', '${CORS_ORIGINS:-http://localhost:3000}')))),
+  'allowedOrigins' => array_filter(explode(',', '${CORS_ORIGINS:-http://localhost:3000}')),
   'exposedHeaders' => FALSE,
   'maxAge' => FALSE,
   'supportsCredentials' => FALSE,
 ];
 
 \$settings['reverse_proxy'] = TRUE;
-\$settings['reverse_proxy_addresses'] = ['127.0.0.1', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'];
+\$settings['reverse_proxy_addresses'] = ['127.0.0.1', '172.16.0.0/12', '10.0.0.0/8'];
 
-if ('${APP_ENV}' !== 'production') {
-  \$settings['skip_permissions_hardening'] = TRUE;
-}
+define('APP_ENV', '${APP_ENV:-production}');
+EOF
 
-define('APP_ENV', '${APP_ENV}');
-EOF_LOCAL
+chmod 444 "$SETTINGS_LOCAL"
+chown www-data:www-data "$SETTINGS_LOCAL"
 
-  chmod 444 "$SETTINGS_LOCAL"
-  ok "✅ settings.local.php generado"
-}
+echo -e "${GREEN}✅ settings.local.php generado${NC}"
 
-wait_for_db() {
-  local retries="${DB_WAIT_RETRIES:-60}"
-  local delay="${DB_WAIT_DELAY:-2}"
-  local i=1
+# ═══════════════════════════════════════════
+# 5. Instalación automática opcional
+# ═══════════════════════════════════════════
+INSTALL_SITE="${INSTALL_SITE:-false}"
+INSTALL_FROM_CONFIG="${INSTALL_FROM_CONFIG:-false}"
+INSTALL_PROFILE="${INSTALL_PROFILE:-standard}"
+SITE_NAME="${SITE_NAME:-Drupal Site}"
+SITE_MAIL="${SITE_MAIL:-admin@example.com}"
+ACCOUNT_NAME="${ACCOUNT_NAME:-admin}"
+ACCOUNT_MAIL="${ACCOUNT_MAIL:-admin@example.com}"
+ACCOUNT_PASS="${ACCOUNT_PASS:-admin}"
 
-  info "⏳ Esperando base de datos en ${DB_HOST}:${DB_PORT}..."
-  until mysqladmin ping -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASS" --silent >/dev/null 2>&1; do
-    if (( i >= retries )); then
-      fail "❌ La base de datos no respondió después de ${retries} intentos"
+cd /opt/drupal/web
+
+DRUSH="/opt/drupal/vendor/bin/drush"
+
+if [ "$INSTALL_SITE" = "true" ]; then
+  if [ -f "$DRUSH" ]; then
+    if ! $DRUSH status --fields=bootstrap --format=list 2>/dev/null | grep -q "Successful"; then
+      echo -e "${YELLOW}🚀 Iniciando instalación automática de Drupal...${NC}"
+
+      if [ "$INSTALL_FROM_CONFIG" = "true" ]; then
+        $DRUSH site:install "${INSTALL_PROFILE}" \
+          --existing-config \
+          --account-name="${ACCOUNT_NAME}" \
+          --account-pass="${ACCOUNT_PASS}" \
+          --account-mail="${ACCOUNT_MAIL}" \
+          --site-name="${SITE_NAME}" \
+          --site-mail="${SITE_MAIL}" \
+          -y
+      else
+        $DRUSH site:install "${INSTALL_PROFILE}" \
+          --account-name="${ACCOUNT_NAME}" \
+          --account-pass="${ACCOUNT_PASS}" \
+          --account-mail="${ACCOUNT_MAIL}" \
+          --site-name="${SITE_NAME}" \
+          --site-mail="${SITE_MAIL}" \
+          -y
+      fi
+
+      echo -e "${GREEN}✅ Drupal instalado automáticamente${NC}"
+    else
+      echo -e "${GREEN}✅ Drupal ya estaba instalado${NC}"
     fi
-    sleep "$delay"
-    ((i++))
-  done
-  ok "✅ Base de datos disponible"
-}
-
-site_is_installed() {
-  mysql -N -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" \
-    -e "SHOW TABLES LIKE 'key_value';" 2>/dev/null | grep -q "key_value"
-}
-
-run_site_install() {
-  local install_site="${INSTALL_SITE:-false}"
-  local install_from_config="${INSTALL_FROM_CONFIG:-false}"
-  local install_profile="${INSTALL_PROFILE:-standard}"
-  local site_name="${SITE_NAME:-Honda Motoverso}"
-  local site_mail="${SITE_MAIL:-admin@example.com}"
-  local account_name="${ACCOUNT_NAME:-admin}"
-  local account_mail="${ACCOUNT_MAIL:-admin@example.com}"
-  local account_pass="${ACCOUNT_PASS:-admin123456}"
-
-  if [[ "$install_site" != "true" ]]; then
-    info "ℹ️  INSTALL_SITE=false — se omite instalación automática"
-    return 0
-  fi
-
-  if site_is_installed; then
-    ok "✅ Drupal ya está instalado"
-    return 0
-  fi
-
-  info "🚀 Instalando Drupal automáticamente..."
-
-  if [[ "$install_from_config" == "true" ]] && find "$CONFIG_DIR" -mindepth 1 -type f | read -r _; then
-    vendor/bin/drush site:install --existing-config -y \
-      --account-name="$account_name" \
-      --account-pass="$account_pass" \
-      --account-mail="$account_mail"
   else
-    vendor/bin/drush site:install "$install_profile" -y \
-      --site-name="$site_name" \
-      --site-mail="$site_mail" \
-      --account-name="$account_name" \
-      --account-pass="$account_pass" \
-      --account-mail="$account_mail"
+    echo -e "${RED}❌ Drush no está disponible para instalar Drupal${NC}"
+    exit 1
   fi
+fi
 
-  vendor/bin/drush cr -y || true
-  ok "✅ Drupal instalado"
-}
+# ═══════════════════════════════════════════
+# 6. Permisos finales
+# ═══════════════════════════════════════════
+chown -R www-data:www-data /opt/drupal/web/sites/default
+chmod -R 775 /opt/drupal/web/sites/default/files || true
 
-print_banner() {
-  echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "${YELLOW}  🚀 honda-motoverso arrancando...       ${NC}"
-  echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-}
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}  ✅ honda-motoverso listo             ${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-print_banner
-load_ssh_keys
-prepare_directories
-ensure_settings
-wait_for_db
-run_site_install
-
-ok "✅ Entorno ${APP_ENV} listo"
 exec "$@"
