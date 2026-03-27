@@ -1,145 +1,75 @@
-# honda-motoverso — Drupal 11 en Dokploy
+# Honda Motoverso — Drupal 11 listo para Dokploy y local
 
-## Persistencia de datos
+Este repo quedó ajustado para dos usos:
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    VPS / Dokploy                        │
-│                                                         │
-│  ┌──────────────────┐    ┌───────────────────────┐      │
-│  │  Contenedor web  │    │   Contenedor db        │      │
-│  │  (efímero)       │    │   (efímero)            │      │
-│  │                  │    │                        │      │
-│  │  Código Drupal ──┼────┼── del repo Git         │      │
-│  │                  │    │                        │      │
-│  └────────┬─────────┘    └──────────┬─────────────┘      │
-│           │                         │                    │
-│     monta │                   monta │                    │
-│           ▼                         ▼                    │
-│  ┌─────────────────┐    ┌───────────────────────┐        │
-│  │ honda_motoverso │    │  honda_motoverso_db   │        │
-│  │ _files          │    │                       │        │
-│  │                 │    │  Base de datos        │        │
-│  │ Imágenes        │    │  MariaDB              │        │
-│  │ Uploads         │    │                       │        │
-│  │ Files Drupal    │    │  PERSISTE SIEMPRE     │        │
-│  │                 │    │                       │        │
-│  │ PERSISTE SIEMPRE│    └───────────────────────┘        │
-│  └─────────────────┘                                     │
-│                                                         │
-│  ⚠️  Los volúmenes sobreviven a:                        │
-│     ✅ docker compose restart                           │
-│     ✅ docker compose down && up                        │
-│     ✅ Redeploy desde Dokploy                           │
-│     ✅ Rebuild del Dockerfile                           │
-│     ❌ docker volume rm honda_motoverso_files (manual)  │
-└─────────────────────────────────────────────────────────┘
-```
+1. **Dokploy con Docker Compose** para desplegar Drupal + MariaDB + phpMyAdmin.
+2. **Docker local** para levantar el sitio rápido y, si lo deseas, instalar Drupal automáticamente.
 
-## Inicio rápido
+## Qué cambió
+
+- Se eliminó el volumen de `vendor` para no mezclar dependencias de Composer con despliegues nuevos.
+- Se eliminaron `container_name` y nombres fijos de volúmenes/redes para evitar colisiones entre `dev`, `stage` y `prod` en el mismo servidor.
+- Se añadió `docker-compose.local.yml` para puertos locales sin ensuciar la configuración de Dokploy.
+- `entrypoint.sh` ahora puede esperar la base de datos e instalar Drupal automáticamente si `INSTALL_SITE=true`.
+- Se añadió `.dockerignore` para acelerar los builds.
+
+## Uso en Dokploy
+
+### Tipo recomendado
+
+Usa este repo como **Docker Compose service** si quieres que Drupal, MariaDB y phpMyAdmin queden juntos.
+
+### Configuración sugerida
+
+- **Provider**: GitHub
+- **Compose type**: Docker Compose
+- **Compose path**: `./docker-compose.yml`
+- **Auto Deploy**: activado
+- **Branch**: una por ambiente (`develop`, `staging`, `main`)
+- **Domains**: configúralos desde la UI de Dokploy
+
+### Variables de entorno
+
+Copia `.env.example` a la sección de variables en Dokploy y cambia lo sensible.
+
+## Uso local
 
 ```bash
-git clone git@github.com:tu-org/honda-motoverso.git
-cd honda-motoverso
-bash .vscode/setup.sh
+cp .env.example .env
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build -d
 ```
 
-## Comandos del día a día
+Luego abre:
 
-| Acción | Comando |
-|--------|---------|
-| Traer BD de producción | `bash .vscode/pull-db.sh main` |
-| Traer files de producción | `bash .vscode/pull-files.sh main` |
-| Subir BD a dev | `bash .vscode/push-db.sh dev` |
-| Drush local | `bash .vscode/drush.sh cr` |
-| Drush remoto | `bash .vscode/drush.sh main cr` |
-| Terminal local | `bash .vscode/ssh.sh` |
-| Terminal remota | `bash .vscode/ssh.sh main` |
+- Drupal: `http://localhost:8080`
+- phpMyAdmin: `http://localhost:8081`
 
-> En VSCode: **Terminal → Run Task** para menú gráfico con todos los comandos.
+### Instalación automática
 
+Si `INSTALL_SITE=true` y la base está vacía, el contenedor instala Drupal al arrancar.
 
-## Gestión de llaves SSH — Múltiples desarrolladores
+Para instalación estándar:
 
-Cada desarrollador tiene su propia variable en el `.env` de Dokploy.
-Así se puede agregar o revocar acceso sin tocar las demás llaves.
-
-### Agregar un desarrollador nuevo
-
-1. El desarrollador comparte su llave pública:
-```bash
-cat ~/.ssh/id_ed25519.pub
-# → ssh-ed25519 AAAA... nombre@mac
+```env
+INSTALL_SITE=true
+INSTALL_FROM_CONFIG=false
 ```
 
-2. Agregar en **Dokploy → Application → Environment Variables**:
+Para instalación desde configuración sincronizada:
+
+```env
+INSTALL_SITE=true
+INSTALL_FROM_CONFIG=true
 ```
-SSH_KEY_JULIAN=ssh-ed25519 AAAA... julian@mac
-```
 
-3. Hacer redeploy en Dokploy — la llave queda activa.
-
-### Revocar acceso a un desarrollador
-
-Eliminar su variable `SSH_KEY_NOMBRE` en Dokploy y hacer redeploy.
-Las demás llaves no se ven afectadas.
-
-### Ejemplo de `.env` con 3 desarrolladores
+## Reiniciar desde cero en local
 
 ```bash
-SSH_KEY_JULIAN=ssh-ed25519 AAAA... julian@mac
-SSH_KEY_ANDRES=ssh-ed25519 BBBB... andres@mac
-SSH_KEY_CARLOS=ssh-ed25519 CCCC... carlos@mac
+docker compose -f docker-compose.yml -f docker-compose.local.yml down -v
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build -d
 ```
 
-### Verificar llaves activas en el contenedor
+## Notas
 
-```bash
-bash .vscode/ssh.sh main
-# Ya dentro del contenedor:
-cat /root/.ssh/authorized_keys
-```
-
-## Estructura
-
-```
-honda-motoverso/
-├── Dockerfile              ← PHP 8.3 + Apache + SSH + Drush
-├── docker-compose.yml      ← Servicios + volúmenes persistentes
-├── entrypoint.sh           ← SSH + settings + composer
-├── composer.json           ← Dependencias (sin vendor en repo)
-├── .env.example            ← Plantilla (sí versionar)
-├── .gitignore
-├── config/sync/            ← Config Drupal exportada ✅ Git
-├── web/
-│   ├── modules/custom/     ← Módulos propios ✅ Git
-│   ├── themes/custom/      ← Temas propios ✅ Git
-│   ├── sites/default/
-│   │   ├── settings.php    ← Sin credenciales ✅ Git
-│   │   ├── settings.local.php ← Auto-generado ❌ .gitignore
-│   │   └── files/          ← Volumen Docker ❌ .gitignore
-│   ├── core/               ← ❌ Composer
-│   └── modules/contrib/    ← ❌ Composer
-└── .vscode/
-    ├── setup.sh            ← Primera vez
-    ├── pull-db.sh          ← BD remota → local
-    ├── pull-files.sh       ← Files remotos → local
-    ├── push-db.sh          ← BD local → remoto (dev/stage)
-    ├── drush.sh            ← Drush local y remoto
-    ├── ssh.sh              ← Terminal local y remota
-    └── tasks.json          ← Tareas VSCode
-```
-
-## Volúmenes Docker en el servidor
-
-```bash
-# Ver volúmenes existentes
-docker volume ls | grep honda
-
-# Inspeccionar volumen de files
-docker volume inspect honda_motoverso_files
-
-# Ruta física en el VPS
-# /var/lib/docker/volumes/honda_motoverso_files/_data
-# /var/lib/docker/volumes/honda_motoverso_db/_data
-```
+- En Dokploy, configura los dominios desde la UI en vez de meter labels manuales en el compose.
+- Si más adelante separas la base de datos a un servicio gestionado, este repo se puede migrar fácil a una Application con Dockerfile.

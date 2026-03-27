@@ -1,54 +1,51 @@
 services:
-
-  # ═══════════════════════════════════════════════════════════
-  # DRUPAL — PHP 8.3 + Apache + SSH + Drush
-  # Los labels de Traefik y la red dokploy-network
-  # los inyecta Dokploy automáticamente — NO agregarlos aquí
-  # ═══════════════════════════════════════════════════════════
   web:
     build:
       context: .
       dockerfile: Dockerfile
-    image: honda-motoverso:11
-    container_name: honda-motoverso-web
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
+    env_file:
+      - .env
     environment:
       DB_HOST: db
       DB_PORT: 3306
       DB_NAME: ${DB_NAME:-drupal}
       DB_USER: ${DB_USER:-drupal}
       DB_PASS: ${DB_PASS:-drupal}
-      DRUPAL_HASH_SALT: ${DRUPAL_HASH_SALT}
-      APP_ENV: ${APP_ENV:-production}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
-      # SSH — una variable por desarrollador
+      DB_ROOT_PASS: ${DB_ROOT_PASS:-root}
+      DRUPAL_HASH_SALT: ${DRUPAL_HASH_SALT:-CHANGE_ME}
+      APP_ENV: ${APP_ENV:-local}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:8080}
+      SSH_PUBLIC_KEYS: ${SSH_PUBLIC_KEYS:-}
+      SSH_PUBLIC_KEY: ${SSH_PUBLIC_KEY:-}
       SSH_KEY_DEV1: ${SSH_KEY_DEV1:-}
       SSH_KEY_DEV2: ${SSH_KEY_DEV2:-}
       SSH_KEY_DEV3: ${SSH_KEY_DEV3:-}
       SSH_KEY_DEV4: ${SSH_KEY_DEV4:-}
       SSH_KEY_DEV5: ${SSH_KEY_DEV5:-}
-      SSH_PUBLIC_KEY: ${SSH_PUBLIC_KEY:-}
+      INSTALL_SITE: ${INSTALL_SITE:-false}
+      INSTALL_FROM_CONFIG: ${INSTALL_FROM_CONFIG:-false}
+      INSTALL_PROFILE: ${INSTALL_PROFILE:-standard}
+      SITE_NAME: ${SITE_NAME:-Honda Motoverso}
+      SITE_MAIL: ${SITE_MAIL:-admin@example.com}
+      ACCOUNT_NAME: ${ACCOUNT_NAME:-admin}
+      ACCOUNT_MAIL: ${ACCOUNT_MAIL:-admin@example.com}
+      ACCOUNT_PASS: ${ACCOUNT_PASS:-admin123456}
+      DB_WAIT_RETRIES: ${DB_WAIT_RETRIES:-60}
+      DB_WAIT_DELAY: ${DB_WAIT_DELAY:-2}
     volumes:
-      # ── VOLUMEN PERSISTENTE: Files ──────────────────────────
-      # Imágenes y uploads — sobrevive a reinicios y redeploys
-      - honda_motoverso_files:/opt/drupal/web/sites/default/files
-
-      # ── VOLUMEN PERSISTENTE: Vendor ─────────────────────────
-      # Dependencias Composer — evita reinstalar en cada reinicio
-      - honda_motoverso_vendor:/opt/drupal/vendor
+      - drupal_files:/opt/drupal/web/sites/default/files
     networks:
-      - honda_motoverso_net
+      - internal
 
-  # ═══════════════════════════════════════════════════════════
-  # MARIADB 10.6
-  # ═══════════════════════════════════════════════════════════
   db:
     image: mariadb:10.6
-    container_name: honda-motoverso-db
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS:-root}
       MYSQL_DATABASE: ${DB_NAME:-drupal}
@@ -57,9 +54,7 @@ services:
       MYSQL_CHARACTER_SET_SERVER: utf8mb4
       MYSQL_COLLATION_SERVER: utf8mb4_general_ci
     volumes:
-      # ── VOLUMEN PERSISTENTE: Base de datos ──────────────────
-      # Toda la BD vive aquí — NUNCA se pierde en redeploys
-      - honda_motoverso_db:/var/lib/mysql
+      - drupal_db:/var/lib/mysql
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
@@ -67,17 +62,16 @@ services:
       retries: 10
       start_period: 30s
     networks:
-      - honda_motoverso_net
+      - internal
 
-  # ═══════════════════════════════════════════════════════════
-  # PHPMYADMIN
-  # ═══════════════════════════════════════════════════════════
   phpmyadmin:
     image: phpmyadmin:latest
-    container_name: honda-motoverso-pma
     restart: unless-stopped
     depends_on:
-      - db
+      db:
+        condition: service_started
+    env_file:
+      - .env
     environment:
       PMA_HOST: db
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS:-root}
@@ -85,27 +79,12 @@ services:
       PHP_POST_MAX_SIZE: 512M
       UPLOAD_LIMIT: 536870912
     networks:
-      - honda_motoverso_net
+      - internal
 
-# ═══════════════════════════════════════════════════════════════
-# VOLÚMENES NOMBRADOS — persistentes en el disco del VPS
-# Sobreviven a: reinicios, redeploys, recreaciones de contenedor
-# Solo se pierden con: docker volume rm <nombre>
-# ═══════════════════════════════════════════════════════════════
 volumes:
-  honda_motoverso_files:
-    name: honda_motoverso_files
-  honda_motoverso_db:
-    name: honda_motoverso_db
-  honda_motoverso_vendor:
-    name: honda_motoverso_vendor
+  drupal_files:
+  drupal_db:
 
-# ═══════════════════════════════════════════════════════════════
-# REDES
-# honda_motoverso_net: red interna entre servicios
-# dokploy-network: Dokploy la agrega automáticamente
-# ═══════════════════════════════════════════════════════════════
 networks:
-  honda_motoverso_net:
-    name: honda_motoverso_net
+  internal:
     driver: bridge

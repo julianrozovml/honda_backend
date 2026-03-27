@@ -1,0 +1,11 @@
+services:
+  web:
+    ports:
+      - "${LOCAL_WEB_PORT:-8080}:80"
+      - "${LOCAL_SSH_PORT:-2222}:2222"
+  db:
+    ports:
+      - "${LOCAL_DB_PORT:-33066}:3306"
+  phpmyadmin:
+    ports:
+      - "${LOCAL_PMA_PORT:-8081}:80"

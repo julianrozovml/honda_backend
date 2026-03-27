@@ -1,0 +1,11 @@
+.git
+.gitignore
+.github
+.vscode
+vendor
+node_modules
+web/sites/default/files
+web/sites/default/settings.local.php
+.env
+.env.*
+README.md
